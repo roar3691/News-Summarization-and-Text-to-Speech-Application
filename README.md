@@ -26,5 +26,5 @@ This project is a web-based application that extracts news articles for a given 
 ### Installation
 1. **Clone the Repository**:
    ```bash
-   git clone [https://github.com/roar3691/News-Summarization-and-Text-to-Speech-Application.git]
-   cd News-Summarization-and-Text-to-Speech-Application
+   git clone [https://github.com/roar3691/NewsEcho.git]
+   cd NewsEcho
