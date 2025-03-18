@@ -1,124 +1,86 @@
 """
 News Summarization and TTS Application
-Description: A Streamlit app that fetches news articles via API, summarizes them, performs sentiment analysis,
-conducts comparative analysis, and generates Hindi TTS for any company.
+Description: A Streamlit app that fetches news articles, summarizes them, performs sentiment analysis,
+conducts comparative analysis, and generates Hindi TTS for any company. Deployable on Hugging Face Spaces.
 """
 
-import streamlit as st  # Web interface library for Python
-import httpx  # Asynchronous HTTP client for API calls
-import json  # For JSON handling (not directly used here but imported for potential debugging)
-import asyncio  # For running asynchronous API requests
-import os  # For accessing environment variables
-from utils import (  # Import utility functions from utils.py
-    summarize_text,  # Summarizes article content
-    analyze_sentiment_vader,  # Analyzes sentiment using VADER
-    comparative_analysis_vader,  # Compares sentiment across articles
-    generate_hindi_tts,  # Generates Hindi TTS audio
-    extract_topics  # Extracts key topics from content
-)
+# Import Streamlit for the web app interface and utility functions from utils.py
+import streamlit as st
+from utils import fetch_google_search_urls, scrape_article, summarize_text, analyze_sentiment_vader, comparative_analysis_vader, extract_topics, generate_dynamic_sentiment, generate_hindi_tts
 
-# API endpoint URL, defaults to localhost:8000 unless overridden by environment variable
-API_URL = os.getenv("API_URL", "http://localhost:8000")
-
-async def fetch_articles_async(company_name):
-    """Fetch articles asynchronously via FastAPI backend"""
-    # Use httpx AsyncClient for non-blocking HTTP requests
-    async with httpx.AsyncClient() as client:
-        try:
-            # Send POST request to FastAPI backend with company name
-            response = await client.post(f"{API_URL}/fetch_articles", json={"company": company_name}, timeout=120)
-            response.raise_for_status()  # Raise exception for HTTP errors
-            data = response.json()  # Parse JSON response
-            # Check if response contains an error or no articles
-            if "error" in data or not data.get("articles"):
-                st.warning(f"No articles found for {company_name}. Response: {data}")
-                return None
-            return data  # Return successful response data
-        except httpx.RequestError as e:
-            st.error(f"API call failed: {e}")  # Display error if request fails
-            return None
-
+# Function to generate a report based on company news
 def generate_report(company_name):
     """Generate structured report with metadata and Hindi TTS"""
-    # Show a loading spinner while processing
+    # Show a loading spinner while fetching and processing data
     with st.spinner(f"Fetching and processing news articles for {company_name}..."):
-        # Create a new event loop for async operations
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        # Fetch articles from the API
-        articles_data = loop.run_until_complete(fetch_articles_async(company_name))
-        loop.close()  # Clean up event loop
+        # Fetch up to 50 news article URLs for the given company
+        urls = fetch_google_search_urls(company_name, num_results=50)
+        articles = []  # List to store processed article data
+        
+        # Progress bar to show how many URLs are processed
+        progress_bar = st.progress(0)
+        # Loop through URLs to scrape articles
+        for i, url in enumerate(urls):
+            article = scrape_article(url)  # Scrape content from the URL
+            if article["content"]:  # Check if article has meaningful content
+                summary = summarize_text(article["content"])  # Summarize the article
+                sentiment = analyze_sentiment_vader(article["content"])  # Analyze sentiment
+                topics = extract_topics(article["content"])  # Extract key topics
+                # Add article details to the list
+                articles.append({
+                    "Title": article["title"],
+                    "Summary": summary,
+                    "Sentiment": sentiment,
+                    "Topics": topics,
+                    "Metadata": {"URL": article["url"]}
+                })
+            # Stop after collecting 10 articles with content
+            if len(articles) >= 10:
+                st.write("Found 10 articles, stopping early")
+                break
+            # Update progress bar (i + 1 because enumerate starts at 0)
+            progress_bar.progress((i + 1) / len(urls))
 
-        # Exit if no articles were fetched
-        if not articles_data or not articles_data.get("articles"):
-            return
+        # Check if we have enough articles
+        if len(articles) < 10:
+            st.error(f"Only {len(articles)} non-JS articles found; need 10")
+            return  # Exit if not enough articles
 
-        articles = articles_data["articles"]  # Extract articles list from response
-        # Initialize report structure
+        # Perform comparative analysis across articles
+        comparative_analysis = comparative_analysis_vader(articles)
+        sentiment_dist = comparative_analysis["Sentiment Distribution"]  # Get sentiment distribution
+        # Generate a dynamic sentiment summary in Hindi
+        final_sentiment = generate_dynamic_sentiment(company_name, articles, sentiment_dist)
+
+        # Create the final report dictionary
         report = {
             "Company": company_name,
-            "Articles": [],
-            "Comparative Sentiment Score": {},
-            "Final Sentiment Analysis": "",
-            "Audio": "[Play Hindi Speech]"
+            "Articles": articles[:10],  # Limit to 10 articles
+            "Comparative Sentiment Score": comparative_analysis,
+            "Final Sentiment Analysis": final_sentiment,
+            "Audio": "[Play Hindi Speech]"  # Placeholder for audio
         }
 
-        # Show progress bar while processing articles
-        progress_bar = st.progress(0)
-        for i, article in enumerate(articles[:10]):  # Limit to 10 articles
-            summary = summarize_text(article["content"])  # Summarize content
-            sentiment = analyze_sentiment_vader(article["content"])  # Analyze sentiment
-            topics = extract_topics(article["content"])  # Extract topics
-            # Add article details to report
-            report["Articles"].append({
-                "Title": article["title"],
-                "Summary": summary,
-                "Sentiment": sentiment,
-                "Topics": topics,
-                "Metadata": {"URL": article["url"]}
-            })
-            progress_bar.progress((i + 1) / 10)  # Update progress (0 to 1)
+        # Generate and save Hindi TTS audio file
+        audio_file = generate_hindi_tts(final_sentiment)
+        st.json(report)  # Display report as JSON in the app
+        st.audio(audio_file, format="audio/mp3")  # Play the audio
 
-        # Perform comparative sentiment analysis
-        report["Comparative Sentiment Score"] = comparative_analysis_vader(report["Articles"])
-
-        # Determine final sentiment analysis in Hindi based on distribution
-        dist = report["Comparative Sentiment Score"]["Sentiment Distribution"]
-        if dist["Positive"] > dist["Negative"] and dist["Positive"] > dist["Neutral"]:
-            report["Final Sentiment Analysis"] = (
-                f"{company_name} की नवीनतम खबरें ज्यादातर सकारात्मक हैं। "
-                "बाजार प्रदर्शन और नवाचार के कारण स्टॉक में वृद्धि की संभावना है।"
-            )
-        elif dist["Negative"] > dist["Positive"] and dist["Negative"] > dist["Neutral"]:
-            report["Final Sentiment Analysis"] = (
-                f"{company_name} की नवीनतम खबरें ज्यादातर नकारात्मक हैं। "
-                "नियामक या बाजार चुनौतियों के कारण सावधानी बरतें।"
-            )
-        else:
-            report["Final Sentiment Analysis"] = (
-                f"{company_name} की नवीनतम खबरें संतुलित हैं। "
-                "मिश्रित अवसरों और चुनौतियों के साथ स्थिर प्रदर्शन की उम्मीद है।"
-            )
-
-        # Generate Hindi TTS audio from final sentiment analysis
-        tts_text = report["Final Sentiment Analysis"]
-        audio_file = generate_hindi_tts(tts_text)
-        st.json(report)  # Display report as JSON
-        st.audio(audio_file, format="audio/mp3")  # Play audio in Streamlit
-
+# Main function to run the Streamlit app
 def main():
-    """Main function to set up and run the Streamlit app"""
-    # Configure Streamlit page settings
+    # Set up the page title and icon
     st.set_page_config(page_title="News Summarizer & TTS", page_icon="📰")
-    st.title("📰 News Summarizer with Hindi TTS")  # Set page title
+    st.title("📰 News Summarizer with Hindi TTS")  # App title
     
-    # Text input for company name
+    # Text input for the user to enter a company name
     company_name = st.text_input("Enter Company Name (e.g., Tesla, Google, Apple):")
-    if st.button("Generate Report"):  # Button to trigger report generation
-        if company_name:
-            generate_report(company_name)  # Generate and display report
+    # Button to trigger report generation
+    if st.button("Generate Report"):
+        if company_name:  # Check if a company name is provided
+            generate_report(company_name)  # Generate the report
         else:
-            st.warning("Please enter a company name.")  # Warn if input is empty
+            st.warning("Please enter a company name.")  # Warn if no input
 
+# Run the app if this file is executed directly
 if __name__ == "__main__":
-    main()  # Run the app if script is executed directly
+    main()
